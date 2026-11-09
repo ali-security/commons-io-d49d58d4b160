@@ -17,7 +17,10 @@
 package org.apache.commons.io.input;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -31,8 +34,10 @@ import java.io.Writer;
 import java.net.URL;
 import java.net.URLConnection;
 import java.text.MessageFormat;
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.regex.Matcher;
 
 import org.apache.commons.io.IOUtils;
 import org.junit.jupiter.api.Test;
@@ -411,6 +416,57 @@ public class XmlStreamReaderTest {
         final XmlStreamReader xmlReader = new XmlStreamReader(is, "", true);
         assertEquals(xmlReader.getEncoding(), "UTF-8");
         xmlReader.close();
+    }
+
+    private static String findPrologEncoding(final String prolog) {
+        final Matcher m = XmlStreamReader.ENCODING_PATTERN.matcher(prolog);
+        return m.find() ? m.group(1) : null;
+    }
+
+    @Test
+    public void testEncodingPattern() {
+        assertEquals("\"UTF-8\"", findPrologEncoding("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"));
+        assertEquals("'UTF-8'", findPrologEncoding("<?xml version='1.0' encoding='UTF-8'?>"));
+        assertEquals("'ISO-8859-1'", findPrologEncoding("<?xml version=\"1.0\" encoding =  \t \n \r'ISO-8859-1'?>"));
+        assertEquals("\"UTF-16\"", findPrologEncoding("<?xml\nversion=\"1.0\"\r\nencoding=\"UTF-16\"\n?>"));
+        // Java charset aliases outside of the XML EncName production
+        assertEquals("\"437\"", findPrologEncoding("<?xml version=\"1.0\" encoding=\"437\"?>"));
+        assertEquals("\"ISO_8859-1:1987\"", findPrologEncoding("<?xml version=\"1.0\" encoding=\"ISO_8859-1:1987\"?>"));
+        assertEquals("'ebcdic-de-273+euro'", findPrologEncoding("<?xml version=\"1.0\" encoding='ebcdic-de-273+euro'?>"));
+        // No encoding declared in the prolog
+        assertNull(findPrologEncoding("<?xml version=\"1.0\"?>"));
+        assertNull(findPrologEncoding("<?xml version=\"1.0\" ?> <atom:title encoding='base64'>"));
+        // The XML declaration must be at the start of the input
+        assertNull(findPrologEncoding("<root><?xml version=\"1.0\" encoding=\"UTF-8\"?>"));
+    }
+
+    @Test
+    public void testMultiLinePrologEncoding() throws Exception {
+        final String xml = "<?xml\nversion=\"1.0\"\r\nencoding=\"ISO-8859-1\"\n?>\n<root>é</root>";
+        try (final XmlStreamReader xmlReader = new XmlStreamReader(
+                new ByteArrayInputStream(xml.getBytes("ISO-8859-1")))) {
+            assertEquals("ISO-8859-1", xmlReader.getEncoding());
+            assertEquals(xml, IOUtils.toString(xmlReader));
+        }
+    }
+
+    @Test
+    public void testEncodingPatternReDoS() {
+        // Many unanchored "<?xml" starts followed by "encoding=" without a quoted value made
+        // the former "<\\?xml.*encoding..." pattern backtrack polynomially (CVE-2024-47554).
+        final StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < 100_000; i++) {
+            sb.append("<?xml");
+        }
+        for (int i = 0; i < 10_000; i++) {
+            sb.append(" encoding=");
+        }
+        final String hostile = sb.toString();
+        assertTimeoutPreemptively(Duration.ofSeconds(10),
+                () -> assertFalse(XmlStreamReader.ENCODING_PATTERN.matcher(hostile).find()));
+        final String hostileWithVersion = "<?xml version=\"1.0\" " + hostile;
+        assertTimeoutPreemptively(Duration.ofSeconds(10),
+                () -> assertFalse(XmlStreamReader.ENCODING_PATTERN.matcher(hostileWithVersion).find()));
     }
 
     // XML Stream generator
