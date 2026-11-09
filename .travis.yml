@@ -33,9 +33,26 @@ matrix:
     - jdk: openjdk-ea
       env: JACOCO_SKIP=true
 
+# Travis' focal image can no longer provision openjdk14 (bellsoft-java14 is gone
+# from its apt repo, leaving JAVA_HOME pointing at a missing directory), so the
+# openjdk14 leg installs the AdoptOpenJDK 14.0.2 build itself.
+before_install:
+  - |
+    if [ "$TRAVIS_JDK_VERSION" = "openjdk14" ]; then
+      wget -q -O /tmp/jdk14.tar.gz "https://github.com/AdoptOpenJDK/openjdk14-binaries/releases/download/jdk-14.0.2%2B12/OpenJDK14U-jdk_x64_linux_hotspot_14.0.2_12.tar.gz"
+      mkdir -p "$HOME/jdk14"
+      tar -xzf /tmp/jdk14.tar.gz -C "$HOME/jdk14" --strip-components=1
+      export JAVA_HOME="$HOME/jdk14"
+      export PATH="$JAVA_HOME/bin:$PATH"
+    fi
+  - java -version
+
 # --no-transfer-progress requires Maven 3.6.1+. Otherwise use --batch-mode
 script:
   - mvn -V --no-transfer-progress
+  # Print each skipped test and the reason Surefire recorded for it.
+  - |
+    perl -0777 -ne 'while (/<testcase\b([^>]*)>\s*<skipped\b([^>]*)/g) { my ($a, $s) = ($1, $2); my ($n) = $a =~ /\bname="([^"]*)"/; my ($c) = $a =~ /classname="([^"]*)"/; my ($m) = $s =~ /message="([^"]*)"/; my $r = $m // "(no message)"; if ($r =~ /assumption is not true/) { (my $p = "src/test/java/$c.java") =~ s{\.(?=.*\.java$)}{/}g; if (open(my $fh, "<", $p)) { local $/; my $src = <$fh>; $r .= " [unmet condition in source: $1]" if $src =~ /void\s+\Q$n\E\s*\(.*?(assume(?:True|False)\([^;]*\));/s; } } print "SKIPPED TEST: $c#$n -- reason: $r\n" }' target/surefire-reports/TEST-*.xml
 
 after_success:
   - mvn -V --no-transfer-progress clean cobertura:cobertura coveralls:report -Ptravis-cobertura
